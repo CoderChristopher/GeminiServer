@@ -1,4 +1,4 @@
-#GEMINI SERVER IN C (Name Change Pending Further Development)
+# GEMINI SERVER IN C (Name Change Pending Further Development)
 
 Hello, this project is me trying to take what I have been learning with C network sockets and use it to do something interesting by writing a Gemini Protocol server. The Gemini Protocl is focused on being clean and easy to understand which makes it a perfect project for me to hack on and try some new things while also learning a lot along the way.
 
@@ -7,4 +7,5 @@ In case it isn't obvious, this currently is not a serious project. I would defin
 Otherwise, with that out of the way, please feel free to look around and take pictures!
 
 Thanks,
+
 CoderChristopher
