@@ -15,6 +15,14 @@
 #define DEBUG_MODE 1
 
 bool done=false;
+int fulfilled=0;
+
+void sigterm(int sigval){
+	done=true;
+}
+void siginfo(int sigval){
+	printf("Fulfilled:%i\n",fulfilled);
+}
 
 //Allows for general error reporting on sockets and their associated functions
 void checkerror(const char* message, int condition, int sock){
@@ -91,6 +99,10 @@ int sanitizecheck(char* pagesource){
 }
 
 int main(int argc,void * argv[]){
+	
+	signal(SIGTERM,sigterm );
+	signal(SIGUSR1,siginfo );
+
 	int sock   = -1;
 	int insock = -1;
 	int option =  1;
@@ -150,6 +162,11 @@ int main(int argc,void * argv[]){
 		cSSL = SSL_new(sslctx);
 		SSL_set_fd(cSSL,insock);
 		int ssl_err=SSL_accept(cSSL);	
+		if(ssl_err!=1){
+			if(DEBUG_MODE)
+				printf("There was an issue with the SSL_accept!\n");
+			goto exit;
+		}
 
 		//Read in the standard response
 		SSL_read(cSSL,inbuffer,STD_REQUEST_SIZE);
@@ -223,6 +240,7 @@ int main(int argc,void * argv[]){
 		free(outbuffer);
 		outbuffer=NULL;
 		
+		exit:;
 		//And close the session
 		shutdownssl(cSSL);
 
@@ -232,6 +250,7 @@ int main(int argc,void * argv[]){
 		memset(     page, 0, STD_BUFFER_SIZE);
 		memset( inbuffer, 0,STD_REQUEST_SIZE);
 		memset(indicator, 0, STD_BUFFER_SIZE);
+		fulfilled++;
 	}
 
 	if(DEBUG_MODE)
