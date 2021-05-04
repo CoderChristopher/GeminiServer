@@ -8,8 +8,11 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-#define STD_BUFFER_SIZE 1024
+#define STD_BUFFER_SIZE 1027
+#define STD_REQUEST_SIZE 1027
+#define DEBUG_MODE 1
 
+//Allows for general error reporting on sockets and their associated functions
 void checkerror(const char* message, int condition, int sock){
 	if( condition == -1){
 		printf("***%s\n",message);
@@ -18,11 +21,13 @@ void checkerror(const char* message, int condition, int sock){
 		exit(-1);
 	}
 }
+
 void initssl(){
 	SSL_load_error_strings();
 	SSL_library_init();
 	OpenSSL_add_all_algorithms();
 }
+
 void destroyssl(){
 	ERR_free_strings();
 	EVP_cleanup();
@@ -30,6 +35,54 @@ void destroyssl(){
 void shutdownssl(SSL* cSSL){
 	SSL_shutdown(cSSL);
 	SSL_free(cSSL);
+}
+int getresource(char* resourcedestination, char* resourcesource){
+	if(!resourcedestination||!resourcesource){
+		return -1;
+	}
+	char* resource=strtok(resourcesource," \r\n");
+	strcpy(resourcedestination,resource);
+	if(resourcedestination==NULL)
+		return -1;
+	return 0;
+}
+int getpage(char* pagedestination, char* resourcesource){
+	if(!pagedestination||!resourcesource){
+		return -1;
+	}
+	char* st	= NULL;
+	char* buffer 	= malloc(STD_BUFFER_SIZE);
+	memset(buffer,0,STD_BUFFER_SIZE);
+	strcpy(buffer,resourcesource);
+	if((st=strstr(resourcesource,"gemini://"))){
+		strcpy(buffer,&st[9]);
+	}
+	char* page = strtok(buffer,"/");
+	if(page==NULL){
+		return -1;
+	}
+	page=strtok(NULL,"/");
+	if(page==NULL){
+		return -1;
+	}
+	strcpy(pagedestination,page);
+	while((page=strtok(NULL,"/"))){
+		strcat(pagedestination,"/");
+		strcat(pagedestination,page);
+	}
+	free(buffer);
+	return 0;
+}
+int sanitizecheck(char* pagesource){
+	if(!pagesource){
+		return -1;
+	}
+	if(strstr(pagesource,"..")){
+		if(DEBUG_MODE)
+			printf("**SANITZER '..' found!\n");
+		return 1;
+	}
+	return 0;
 }
 
 int main(int argc,void * argv[]){
@@ -41,11 +94,17 @@ int main(int argc,void * argv[]){
 	SSL_CTX *sslctx;
 	SSL *cSSL;
 
-	char* inbuffer  = malloc(STD_BUFFER_SIZE);
-	char* outbuffer = malloc(STD_BUFFER_SIZE);
+	char* inbuffer  = malloc(STD_REQUEST_SIZE);
+	char* outbuffer = malloc( STD_BUFFER_SIZE);
+	char* resource 	= malloc( STD_BUFFER_SIZE);
+	char* page 	= malloc( STD_BUFFER_SIZE);
+	char* indicator = malloc( STD_BUFFER_SIZE);
 
-	memset(inbuffer , 0, STD_BUFFER_SIZE);
-	memset(outbuffer, 0, STD_BUFFER_SIZE);
+	memset( inbuffer, 0, STD_REQUEST_SIZE);
+	memset(outbuffer, 0,  STD_BUFFER_SIZE);
+	memset( resource, 0,  STD_BUFFER_SIZE);
+	memset(     page, 0,  STD_BUFFER_SIZE);
+	memset(indicator, 0,  STD_BUFFER_SIZE);
 	
 	struct sockaddr    addrin;
 	struct sockaddr_in addr;
@@ -53,10 +112,11 @@ int main(int argc,void * argv[]){
 
 	addr.sin_family = AF_INET;
 	addr.sin_port   = htons(1965);
-	addr.sin_addr.s_addr= inet_addr("192.168.0.4");
+	addr.sin_addr.s_addr= inet_addr("127.0.0.1");
 
 	initssl();
 
+	//Start setting up the low level sockets for the server.
 	sock=socket( AF_INET, SOCK_STREAM, 0);
 	checkerror("There was an error creating the socket!",sock,sock);
 
@@ -68,24 +128,82 @@ int main(int argc,void * argv[]){
 	error=listen(sock, 10);
 	checkerror("There was an error while listening on the socket!",error,sock);
 
-	insock=accept(sock, &addrin, &socklen);
-	checkerror("There was an error in accepting the connection!",insock,insock);
+	{
+		unsigned char status = 20;
+		insock=accept(sock, &addrin, &socklen);
+		checkerror("There was an error in accepting the connection!",insock,insock);
 
-	sslctx = SSL_CTX_new(TLS_server_method());
+		if(DEBUG_MODE)
+			printf("*New SSL Connection beginning...\n");
+		//Begin the passoff to SSL
+		sslctx = SSL_CTX_new(TLS_server_method());
 
-	int use_cert = SSL_CTX_use_certificate_file(sslctx, "cert.pem",SSL_FILETYPE_PEM);
-	int use_prv  = SSL_CTX_use_PrivateKey_file(sslctx, "key.pem",SSL_FILETYPE_PEM);
+		//Loadup the certificate and key
+		int use_cert = SSL_CTX_use_certificate_file(sslctx, "cert.pem",SSL_FILETYPE_PEM);
+		int use_prv  = SSL_CTX_use_PrivateKey_file(sslctx, "key.pem",SSL_FILETYPE_PEM);
 
-	cSSL = SSL_new(sslctx);
-	SSL_set_fd(cSSL,insock);
-	int ssl_err=SSL_accept(cSSL);	
-	SSL_read(cSSL,inbuffer,1024);
+		cSSL = SSL_new(sslctx);
+		SSL_set_fd(cSSL,insock);
+		int ssl_err=SSL_accept(cSSL);	
 
-	sprintf(outbuffer,"20 text/gemini\r\n %s\r\n","This is some body content.");
-	SSL_write(cSSL,outbuffer,STD_BUFFER_SIZE);
+		//Read in the standard response
+		SSL_read(cSSL,inbuffer,STD_REQUEST_SIZE);
+		if(getresource(resource,inbuffer)){
+			status=50;
+			if(DEBUG_MODE)
+				printf("*Resource was empty...\n");
+			strcpy(indicator,"No resource was given.");	
+		}
+		if(!strcmp(resource,"/")){
+			if(DEBUG_MODE)
+				printf("*/ directory given...\n");
+			//Load default page
+			strcpy(page,"index.gmi");
+		}else if(!strcmp(resource," ")){
+			if(DEBUG_MODE)
+				printf("*no directory given...\n");
+			//Load default page
+			strcpy(page,"index.gmi");
+		}else {
+			if(DEBUG_MODE)
+				printf("*Directory given: %s\n",resource);
+			getpage(page,resource);
+		}
 
-	destroyssl();
+		if(DEBUG_MODE)
+			printf("*Page Requested: %s\n",page);
 
+		//Sanatize
+		if(sanitizecheck(page)!=0){
+			status=50;
+			strcpy(indicator,"Sanitization check of URI failed.");	
+		}
+
+		//*****
+		//Right now there is no intelligence, just a stupid success response :(
+		//Don't worry, we will give this scarecrow a brain later...
+		//*****
+
+		//Respond with the standard success response.
+		sprintf(outbuffer,"%i %s\r\n %s\r\n",status,indicator,"This is some body content.");
+		if(DEBUG_MODE)
+			printf("*Sending a response with a status code %i.\n",status);
+		SSL_write(cSSL,outbuffer,STD_BUFFER_SIZE);
+		
+		//And close the session
+		shutdownssl(cSSL);
+
+		destroyssl();
+		error=shutdown( insock, SHUT_RDWR);
+		checkerror("There was an error shutting down the input socket!",error,sock);
+		memset( resource, 0, STD_BUFFER_SIZE);
+		memset(     page, 0, STD_BUFFER_SIZE);
+		memset(outbuffer, 0, STD_BUFFER_SIZE);
+		memset( inbuffer, 0,STD_REQUEST_SIZE);
+		memset(indicator, 0, STD_BUFFER_SIZE);
+	}
+
+	
 	error=shutdown( sock, SHUT_RDWR);
 	checkerror("There was an error shutting down the socket!",error,sock);
 	return 0;
