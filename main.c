@@ -7,10 +7,14 @@
 #include <netinet/in.h>
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <stdbool.h>
+#include <signal.h>
 
 #define STD_BUFFER_SIZE 1027
 #define STD_REQUEST_SIZE 1027
 #define DEBUG_MODE 1
+
+bool done=false;
 
 //Allows for general error reporting on sockets and their associated functions
 void checkerror(const char* message, int condition, int sock){
@@ -47,6 +51,7 @@ int getresource(char* resourcedestination, char* resourcesource){
 	return 0;
 }
 int getpage(char* pagedestination, char* resourcesource){
+	strcpy(pagedestination,"main.c");
 	if(!pagedestination||!resourcesource){
 		return -1;
 	}
@@ -95,13 +100,12 @@ int main(int argc,void * argv[]){
 	SSL *cSSL;
 
 	char* inbuffer  = malloc(STD_REQUEST_SIZE);
-	char* outbuffer = malloc( STD_BUFFER_SIZE);
+	char* outbuffer = NULL;
 	char* resource 	= malloc( STD_BUFFER_SIZE);
 	char* page 	= malloc( STD_BUFFER_SIZE);
 	char* indicator = malloc( STD_BUFFER_SIZE);
 
 	memset( inbuffer, 0, STD_REQUEST_SIZE);
-	memset(outbuffer, 0,  STD_BUFFER_SIZE);
 	memset( resource, 0,  STD_BUFFER_SIZE);
 	memset(     page, 0,  STD_BUFFER_SIZE);
 	memset(indicator, 0,  STD_BUFFER_SIZE);
@@ -128,8 +132,9 @@ int main(int argc,void * argv[]){
 	error=listen(sock, 10);
 	checkerror("There was an error while listening on the socket!",error,sock);
 
-	{
+	while(done==false){
 		unsigned char status = 20;
+		char* body = NULL;
 		insock=accept(sock, &addrin, &socklen);
 		checkerror("There was an error in accepting the connection!",insock,insock);
 
@@ -169,7 +174,6 @@ int main(int argc,void * argv[]){
 				printf("*Directory given: %s\n",resource);
 			getpage(page,resource);
 		}
-
 		if(DEBUG_MODE)
 			printf("*Page Requested: %s\n",page);
 
@@ -179,30 +183,67 @@ int main(int argc,void * argv[]){
 			strcpy(indicator,"Sanitization check of URI failed.");	
 		}
 
-		//*****
-		//Right now there is no intelligence, just a stupid success response :(
-		//Don't worry, we will give this scarecrow a brain later...
-		//*****
+		ssize_t filelength=0;
+		FILE* file=fopen(page,"r");		
+		if(!file){
+			status=51;
+			//Hmmm maybe an opportunity for some hacker to do a buffer overflow?
+			//>:D (Will fix)
+			sprintf(indicator,"Page %s not found!",page);
+		}else{
+			fseek(file, 0, SEEK_END);
+			ssize_t filelength = ftell(file);
+			fseek(file, 0, SEEK_SET);
+			body=malloc(filelength+1);
+			fread(body, 1, filelength,file);
+			body[filelength] = 0;
+			fclose(file);
+		}
 
+		size_t outbuffersize=0;
 		//Respond with the standard success response.
-		sprintf(outbuffer,"%i %s\r\n %s\r\n",status,indicator,"This is some body content.");
+		if(body){
+			//Another opportunity for a buffer overflow. May this code never see
+			//the light of production
+			outbuffersize=5+2+strlen(indicator)+strlen(body);
+			outbuffer=malloc(outbuffersize);
+			sprintf( outbuffer, "%i %s\r\n%s\r\n", status, indicator, body);
+			memset( body, 0, filelength);
+			free(body);
+		}else{
+			outbuffersize=3+2+strlen(indicator);
+			outbuffer=malloc(outbuffersize);
+			sprintf( outbuffer, "%i %s\r\n", status, indicator);
+		}
 		if(DEBUG_MODE)
 			printf("*Sending a response with a status code %i.\n",status);
-		SSL_write(cSSL,outbuffer,STD_BUFFER_SIZE);
+		if(outbuffer)
+			SSL_write(cSSL,outbuffer,outbuffersize);
+
+		free(outbuffer);
+		outbuffer=NULL;
 		
 		//And close the session
 		shutdownssl(cSSL);
 
-		destroyssl();
 		error=shutdown( insock, SHUT_RDWR);
 		checkerror("There was an error shutting down the input socket!",error,sock);
 		memset( resource, 0, STD_BUFFER_SIZE);
 		memset(     page, 0, STD_BUFFER_SIZE);
-		memset(outbuffer, 0, STD_BUFFER_SIZE);
 		memset( inbuffer, 0,STD_REQUEST_SIZE);
 		memset(indicator, 0, STD_BUFFER_SIZE);
 	}
 
+	if(DEBUG_MODE)
+		printf("*Closing up shop...\n");
+
+	free( resource);
+	free(     page);
+	free( inbuffer);
+	free(indicator);
+
+
+	destroyssl();
 	
 	error=shutdown( sock, SHUT_RDWR);
 	checkerror("There was an error shutting down the socket!",error,sock);
